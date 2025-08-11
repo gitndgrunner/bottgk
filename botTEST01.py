@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember
 import asyncio
 from datetime import datetime
 
@@ -28,6 +28,10 @@ USERS_DB_FILE = 'users_db.json'
 ADMIN_DB_FILE = 'admin_db.json'
 WIN_CODES_DB_FILE = 'win_codes_db.json'
 LOG_FILE = 'bot_logs.txt'
+
+# ID канала, на который нужно подписаться (замените на ваш)
+CHANNEL_ID = -1002686886872
+CHANNEL_LINK = "https://t.me/Basketball_Gifts"
 
 # База данных пользователей
 users_db: Dict[int, Dict] = {}
@@ -55,10 +59,8 @@ def load_data():
         if os.path.exists(USERS_DB_FILE):
             with open(USERS_DB_FILE, 'r', encoding='utf-8') as f:
                 users_db = json.load(f)
-                # Преобразование ключей из строк в int (так как JSON ключи словаря всегда строки)
                 users_db = {int(k): v for k, v in users_db.items()}
                 log_event("SYSTEM", f"Загружены данные пользователей из {USERS_DB_FILE}")
-    
     except Exception as e:
         log_event("SYSTEM", f"Ошибка загрузки users_db: {str(e)}")
         users_db = {}
@@ -209,10 +211,31 @@ def get_user_management_keyboard():
         resize_keyboard=True
     )
 
-# Обработчики команд
+async def check_subscription(user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        print(f"Ошибка проверки подписки: {e}")
+        return False
+
 @dp.message(Command("start", "help"))
 async def send_welcome(message: types.Message):
     user_id = message.from_user.id
+    
+    is_subscribed = await check_subscription(user_id)
+    if not is_subscribed:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Подписаться на канал", url=CHANNEL_LINK)],
+            [InlineKeyboardButton(text="Я подписался", callback_data="check_subscription")]
+        ])
+        await message.answer(
+            "📢 Для использования бота необходимо подписаться на наш канал!\n\n"
+            "После подписки нажмите кнопку 'Я подписался'",
+            reply_markup=keyboard
+        )
+        return
+    
     if user_id not in users_db:
         users_db[user_id] = {
             'balance': 100, 
@@ -238,6 +261,37 @@ async def send_welcome(message: types.Message):
         reply_markup=get_main_keyboard()
     )
 
+@dp.callback_query(lambda c: c.data == "check_subscription")
+async def process_check_subscription(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    is_subscribed = await check_subscription(user_id)
+    
+    if is_subscribed:
+        await callback_query.message.delete()
+        
+        if user_id not in users_db:
+            users_db[user_id] = {
+                'balance': 100, 
+                'games_played': 0, 
+                'games_won': 0,
+                'is_blocked': False,
+                'win_codes': []
+            }
+            log_event(user_id, "Новый пользователь. Начислен стартовый бонус 100⭐")
+        
+        await callback_query.message.answer(
+            "🏀 Добро пожаловать в баскетбольную игру!\n\n"
+            "Правила:\n"
+            f"- 1 мяч за {admin_db['settings']['ball1_cost']}⭐ (победа: 1/1)\n"
+            f"- 2 мяча за {admin_db['settings']['ball2_cost']}⭐ (победа: 2/2)\n"
+            f"- 3 мяча за {admin_db['settings']['ball3_cost']}⭐ (победа: 3/3)\n\n"
+            f"🎁 Вам начислен стартовый бонус: 100⭐\n"
+            "Если выигрываете - получаете приз и уникальный код!",
+            reply_markup=get_main_keyboard()
+        )
+    else:
+        await callback_query.answer("❌ Вы ещё не подписались на канал!", show_alert=True)
+
 @dp.message(Command("adminpanel"))
 async def admin_panel(message: types.Message, state: FSMContext):
     await state.set_state(PaymentState.waiting_for_admin_password)
@@ -255,6 +309,19 @@ async def exit_admin_panel(message: types.Message, state: FSMContext):
 @dp.message(lambda message: message.text == "🎮 Играть")
 async def play_game(message: types.Message):
     user_id = message.from_user.id
+    is_subscribed = await check_subscription(user_id)
+    if not is_subscribed:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Подписаться на канал", url=CHANNEL_LINK)],
+            [InlineKeyboardButton(text="Я подписался", callback_data="check_subscription")]
+        ])
+        await message.answer(
+            "📢 Для использования бота необходимо подписаться на наш канал!\n\n"
+            "После подписки нажмите кнопку 'Я подписался'",
+            reply_markup=keyboard
+        )
+        return
+    
     if users_db.get(user_id, {}).get('is_blocked', False):
         await message.answer("❌ Ваш аккаунт заблокирован. Обратитесь к администратору.")
         return
@@ -264,6 +331,19 @@ async def play_game(message: types.Message):
 @dp.message(lambda message: message.text == "💰 Пополнить баланс")
 async def add_balance(message: types.Message):
     user_id = message.from_user.id
+    is_subscribed = await check_subscription(user_id)
+    if not is_subscribed:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Подписаться на канал", url=CHANNEL_LINK)],
+            [InlineKeyboardButton(text="Я подписался", callback_data="check_subscription")]
+        ])
+        await message.answer(
+            "📢 Для использования бота необходимо подписаться на наш канал!\n\n"
+            "После подписки нажмите кнопку 'Я подписался'",
+            reply_markup=keyboard
+        )
+        return
+
     if users_db.get(user_id, {}).get('is_blocked', False):
         await message.answer("❌ Ваш аккаунт заблокирован. Обратитесь к администратору.")
         return
@@ -273,6 +353,19 @@ async def add_balance(message: types.Message):
 @dp.message(lambda message: message.text == "📊 Статистика")
 async def show_stats(message: types.Message):
     user_id = message.from_user.id
+    is_subscribed = await check_subscription(user_id)
+    if not is_subscribed:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Подписаться на канал", url=CHANNEL_LINK)],
+            [InlineKeyboardButton(text="Я подписался", callback_data="check_subscription")]
+        ])
+        await message.answer(
+            "📢 Для использования бота необходимо подписаться на наш канал!\n\n"
+            "После подписки нажмите кнопку 'Я подписался'",
+            reply_markup=keyboard
+        )
+        return
+        
     if user_id not in users_db:
         users_db[user_id] = {
             'balance': 100, 
@@ -292,7 +385,6 @@ async def show_stats(message: types.Message):
         f"🔑 Кодов выигрыша: {len(stats.get('win_codes', []))}"
     )
 
-# Обработчики игры с новой системой призов
 @dp.message(lambda message: message.text.startswith("1 мяч"))
 async def play_one_ball(message: types.Message):
     user_id = message.from_user.id
@@ -316,7 +408,6 @@ async def play_one_ball(message: types.Message):
         log_event(user_id, f"Попытка игры в 1 мяч (недостаточно средств)")
         return
     
-    # Отправляем мяч как отдельное сообщение
     await message.answer("🏀")
     
     user_data['balance'] -= cost
@@ -325,10 +416,8 @@ async def play_one_ball(message: types.Message):
     
     log_event(user_id, f"Списано {cost}⭐ за игру в 1 мяч. Баланс: {user_data['balance']}⭐")
     
-    # Имитация броска с задержкой
     await asyncio.sleep(2)
     
-    # Новая система призов: 1/1 - выиграл
     hits = 1 if random.random() < admin_db['settings']['ball1_chance'] else 0
     
     if hits == 1:
@@ -383,15 +472,12 @@ async def play_two_balls(message: types.Message):
     
     log_event(user_id, f"Списано {cost}⭐ за игру в 2 мяча. Баланс: {user_data['balance']}⭐")
     
-    # Бросаем 2 мяча по очереди
     hits = 0
     
     for i in range(2):
-        # Отправляем мяч как отдельное сообщение
         await message.answer("🏀")
-        await asyncio.sleep(1.5)  # Задержка между бросками
+        await asyncio.sleep(1.5)
         
-        # Определяем попадание и отправляем результат
         if random.random() < admin_db['settings']['ball2_chance']:
             hits += 1
             await message.answer("✅ Попал!")
@@ -399,7 +485,6 @@ async def play_two_balls(message: types.Message):
             await message.answer("❌ Промах!")
         await asyncio.sleep(0.5)
     
-    # Новая система призов: 2/2 - выиграл, 1/2 - проиграл, 0/2 - проиграл
     if hits == 2:
         user_data['games_won'] += 1
         win_code = generate_win_code()
@@ -452,15 +537,12 @@ async def play_three_balls(message: types.Message):
     
     log_event(user_id, f"Списано {cost}⭐ за игру в 3 мяча. Баланс: {user_data['balance']}⭐")
     
-    # Бросаем 3 мяча по очереди
     hits = 0
     
     for i in range(3):
-        # Отправляем мяч как отдельное сообщение
         await message.answer("🏀")
-        await asyncio.sleep(1.5)  # Задержка между бросками
+        await asyncio.sleep(1.5)
         
-        # Определяем попадание и отправляем результат
         if random.random() < admin_db['settings']['ball3_chance']:
             hits += 1
             await message.answer("✅ Попал!")
@@ -468,7 +550,6 @@ async def play_three_balls(message: types.Message):
             await message.answer("❌ Промах!")
         await asyncio.sleep(0.5)
     
-    # Новая система призов: 3/3 - выиграл, 2/3 - проиграл, 1/3 - проиграл, 0/3 - проиграл
     if hits == 3:
         user_data['games_won'] += 1
         win_code = generate_win_code()
@@ -492,13 +573,11 @@ async def play_three_balls(message: types.Message):
     await show_stats(message)
     save_data()
 
-# Обработчики пополнения баланса
 @dp.message(lambda message: message.text in ["5⭐", "10⭐", "100⭐"])
 async def process_payment(message: types.Message):
     amount = int(message.text.replace("⭐", ""))
     user_id = message.from_user.id
     
-    # Создаем инлайн кнопку для оплаты
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оплатить звёздами", pay=True)],
         [InlineKeyboardButton(text="Отменить", callback_data="cancel_payment")]
@@ -525,7 +604,6 @@ async def process_custom_amount(message: types.Message, state: FSMContext):
         
         user_id = message.from_user.id
         
-        # Создаем инлайн кнопку для оплаты
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Оплатить звёздами", pay=True)],
             [InlineKeyboardButton(text="Отменить", callback_data="cancel_payment")]
@@ -542,7 +620,6 @@ async def process_custom_amount(message: types.Message, state: FSMContext):
         return
     await state.clear()
 
-# Обработчики админ-панели
 @dp.message(PaymentState.waiting_for_admin_password)
 async def check_admin_password(message: types.Message, state: FSMContext):
     if message.text == "807807":
@@ -709,46 +786,59 @@ async def withdraw_stars(message: types.Message, state: FSMContext):
 async def process_withdraw(message: types.Message, state: FSMContext):
     try:
         amount = int(message.text)
-        min_withdraw = admin_db['settings']['min_withdraw']
-        
-        if amount < min_withdraw:
-            await message.answer(f"❌ Минимальная сумма вывода: {min_withdraw}⭐")
-            log_event(message.from_user.id, f"Попытка вывода {amount}⭐ (меньше минимума)")
-            return
+        if amount <= 0:
+            raise ValueError
         
         if amount > admin_db['stars_balance']:
-            await message.answer(f"❌ Недостаточно звёзд для вывода! Доступно: {admin_db['stars_balance']}⭐")
-            log_event(message.from_user.id, f"Попытка вывода {amount}⭐ (недостаточно средств)")
-            return
-        
-        admin_db['stars_balance'] -= amount
-        await message.answer(
-            f"✅ Запрос на вывод {amount}⭐ успешно отправлен!\n"
-            f"Остаток на балансе: {admin_db['stars_balance']}⭐",
-            reply_markup=get_admin_keyboard()
-        )
-        log_event(message.from_user.id, f"Вывод {amount}⭐. Остаток: {admin_db['stars_balance']}⭐")
+            await message.answer(f"❌ Недостаточно звёзд на балансе бота для вывода. Доступно: {admin_db['stars_balance']}⭐")
+        elif amount < admin_db['settings']['min_withdraw']:
+            await message.answer(f"❌ Сумма вывода должна быть не меньше {admin_db['settings']['min_withdraw']}⭐")
+        else:
+            admin_db['stars_balance'] -= amount
+            await message.answer(f"✅ Успешно выведено {amount}⭐. Баланс бота: {admin_db['stars_balance']}⭐")
+            log_event(message.from_user.id, f"Выведено {amount}⭐. Баланс бота: {admin_db['stars_balance']}⭐")
     except ValueError:
-        await message.answer("❌ Пожалуйста, введите целое число")
-        return
-    
-    await state.clear()
-    save_data()
+        await message.answer("❌ Пожалуйста, введите корректное число.")
+    finally:
+        await state.clear()
+        save_data()
+
+@dp.message(PaymentState.waiting_for_user_id)
+async def process_user_id_for_block(message: types.Message, state: FSMContext):
+    try:
+        user_id = int(message.text)
+        data = await state.get_data()
+        action = data['action']
+        
+        if user_id in users_db:
+            if action == "block":
+                users_db[user_id]['is_blocked'] = True
+                await message.answer(f"✅ Пользователь {user_id} заблокирован.")
+                log_event(message.from_user.id, f"Заблокирован пользователь {user_id}")
+            else:
+                users_db[user_id]['is_blocked'] = False
+                await message.answer(f"✅ Пользователь {user_id} разблокирован.")
+                log_event(message.from_user.id, f"Разблокирован пользователь {user_id}")
+        else:
+            await message.answer("❌ Пользователь с таким ID не найден.")
+        
+        save_data()
+    except ValueError:
+        await message.answer("❌ Пожалуйста, введите корректный ID пользователя (число).")
+    finally:
+        await state.clear()
 
 @dp.message(lambda message: message.text == "📊 Логи пользователей")
 async def show_user_logs(message: types.Message):
     try:
         with open(LOG_FILE, 'r', encoding='utf-8') as f:
             logs = f.read()
-        
-        if len(logs) > 4000:  # Ограничение Telegram на длину сообщения
-            logs = logs[-4000:]  # Берем последние 4000 символов
-        
-        await message.answer(f"📝 Последние события:\n\n{logs}")
-        log_event(message.from_user.id, "Просмотр логов")
-    except Exception as e:
-        await message.answer("❌ Ошибка при чтении логов")
-        log_event(message.from_user.id, f"Ошибка просмотра логов: {str(e)}")
+            if len(logs) > 4096:
+                await message.answer("Лог-файл слишком большой для отправки. Он был сохранен локально.")
+            else:
+                await message.answer(f"Содержимое лог-файла:\n\n```{logs}```")
+    except FileNotFoundError:
+        await message.answer("❌ Лог-файл не найден.")
 
 @dp.message(lambda message: message.text == "🔍 Проверить выигрышный код")
 async def check_win_code(message: types.Message, state: FSMContext):
@@ -756,75 +846,30 @@ async def check_win_code(message: types.Message, state: FSMContext):
     await message.answer("Введите выигрышный код для проверки:")
 
 @dp.message(PaymentState.waiting_for_win_code)
-async def process_win_code_check(message: types.Message, state: FSMContext):
-    win_code = message.text.upper().strip()
-    
-    if win_code in win_codes_db:
-        code_info = win_codes_db[win_code]
-        user_id = code_info['user_id']
-        user_info = users_db.get(user_id, {})
-        
-        response = (
-            f"🔍 Информация о коде {win_code}:\n\n"
-            f"🆔 ID пользователя: {user_id}\n"
-            f"👤 Имя пользователя: {user_info.get('username', 'не указано')}\n"
-            f"🎮 Тип игры: {code_info['game_type']}\n"
-            f"📅 Дата выигрыша: {code_info['timestamp']}\n"
-            f"💰 Баланс пользователя: {user_info.get('balance', 0)}⭐\n"
-            f"🎮 Игр сыграно: {user_info.get('games_played', 0)}\n"
-            f"🏆 Игр выиграно: {user_info.get('games_won', 0)}\n"
-            f"🔑 Всего кодов у пользователя: {len(user_info.get('win_codes', []))}\n"
-            f"✅ Статус кода: {'использован' if code_info['used'] else 'активен'}"
+async def process_check_win_code(message: types.Message, state: FSMContext):
+    code = message.text.strip()
+    if code in win_codes_db:
+        win_info = win_codes_db[code]
+        status = "Использован" if win_info['used'] else "Не использован"
+        await message.answer(
+            f"✅ Код найден!\n"
+            f"ID пользователя: {win_info['user_id']}\n"
+            f"Тип игры: {win_info['game_type']}\n"
+            f"Дата выигрыша: {win_info['timestamp']}\n"
+            f"Статус: {status}"
         )
-        
-        await message.answer(response, reply_markup=get_admin_keyboard())
-        log_event(message.from_user.id, f"Проверка кода {win_code} для пользователя {user_id}")
     else:
-        await message.answer("❌ Код не найден в базе данных.", reply_markup=get_admin_keyboard())
-        log_event(message.from_user.id, f"Попытка проверки несуществующего кода: {win_code}")
-    
+        await message.answer("❌ Код не найден.")
     await state.clear()
 
 @dp.message(lambda message: message.text == "💾 Сохранить данные")
-async def save_data_command(message: types.Message):
+async def manual_save_data(message: types.Message):
     save_data()
-    await message.answer("✅ Данные успешно сохранены!")
-    log_event(message.from_user.id, "Ручное сохранение данных")
-
-# Обработчик пре-чекаута (для реальных платежей)
-@dp.pre_checkout_query()
-async def pre_checkout_handler(pre_checkout_query: types.PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-
-# Обработчик успешной оплаты
-@dp.message(lambda message: message.successful_payment is not None)
-async def successful_payment(message: types.Message):
-    user_id = message.from_user.id
-    amount = message.successful_payment.total_amount // 100  # Сумма в звездах
-    
-    if user_id not in users_db:
-        users_db[user_id] = {
-            'balance': 0, 
-            'games_played': 0, 
-            'games_won': 0,
-            'is_blocked': False,
-            'win_codes': []
-        }
-    
-    users_db[user_id]['balance'] += amount
-    await message.answer(
-        f"✅ Ваш баланс пополнен на {amount}⭐\n"
-        f"Текущий баланс: {users_db[user_id]['balance']}⭐"
-    )
-    log_event(user_id, f"Пополнение баланса на {amount}⭐. Новый баланс: {users_db[user_id]['balance']}⭐")
-    save_data()
+    await message.answer("✅ Данные сохранены.")
 
 async def main():
-    # Загрузка данных при старте
     load_data()
-    log_event("SYSTEM", "Бот запущен")
-    
     await dp.start_polling(bot)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())
